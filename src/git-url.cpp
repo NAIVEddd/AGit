@@ -1,5 +1,4 @@
 #include<regex>
-#include<iostream>
 #include"git-url.h"
 
 RepoInfo ParseURL(const std::string& url)
