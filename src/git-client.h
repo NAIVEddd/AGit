@@ -8,4 +8,5 @@ struct git_client
     void Close();
 
     void LsRemote(const RepoInfo& info);
+    void Negotiation(const RepoInfo& info);
 };

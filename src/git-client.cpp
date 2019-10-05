@@ -4,8 +4,10 @@
 #include<netdb.h>
 #include<vector>
 #include<utility>
+#include<algorithm>
 #include"git-client.h"
 #include"git-pack-line.h"
+#include"git-reference.h"
 
 #include<iostream>
 
@@ -39,6 +41,16 @@ int SetupTCPClientSocket(const char* host, const char* service)
     return sock;
 }
 
+void printuint32s(char* buf, char* common, size_t size)
+{
+    std::cout<<common<<"[";
+    for(auto i = 0; i != size; ++i)
+    {
+        std::cout<<(uint32_t)(uint8_t)buf[i]<<' ';
+    }
+    std::cout<<"]\n";
+}
+
 bool ReceiveFull(int sock, std::vector<std::pair<char*, size_t>>& packs, char* buf, size_t bufsize)
 {
     char lenBuf[5] = {0};
@@ -47,6 +59,7 @@ bool ReceiveFull(int sock, std::vector<std::pair<char*, size_t>>& packs, char* b
     do
     {
         size_t recvBytes = recv(sock, lenBuf, 4,0);
+        printuint32s(lenBuf, "recvBytes", 4);
         if(recvBytes == 0) break;
         msgLen = std::stol(std::string(lenBuf), 0, 16);
         if(msgLen == 0) break;
@@ -73,6 +86,7 @@ bool ReceiveFull(int sock, std::vector<std::pair<char*, size_t>>& packs, char* b
                 throw;
             }
         }
+        printuint32s(packs.back().first, "pack:", packs.back().second);
     } while(true);
     return true;
 }
@@ -86,6 +100,23 @@ bool git_client::Init(const RepoInfo& info)
 void git_client::Close()
 {
     close(sock);
+    sock = -1;
+}
+
+size_t git_proto_request(char* buf,const char* host, const char* repo)
+{
+    char command[] = "git-upload-pack /";
+    char hoststr[] = "host=";
+    std::sprintf(buf, "%s%s\0", command, repo);
+    size_t len = std::strlen(command) + std::strlen(repo);
+    std::sprintf(buf + len + 1, "%s%s\0", hoststr, host);
+    len += (std::strlen(hoststr) + std::strlen(host) + 2);
+
+    std::string msg;
+    msg.assign(buf, len);
+    msg = pack_line::encode(msg);
+    memcpy(buf, msg.c_str(), msg.size());
+    return msg.size();
 }
 
 void git_client::LsRemote(const RepoInfo& info)
@@ -93,15 +124,9 @@ void git_client::LsRemote(const RepoInfo& info)
     if(!Init(info))
         return;
     char* buf = new char[100000];
-    char command[] = "git-upload-pack /";
-    char hoststr[] = "host=";
-    std::sprintf(buf, "%s%s\0%s%s\0",command,info.repository.c_str(),hoststr,info.host.c_str());
-    size_t length = std::strlen(command) + std::strlen(hoststr) + info.repository.size() + info.host.size();
-    
-    std::string msg,payload;
-    msg.assign(buf, length);
-    payload = pack_line::encode(msg);
-    send(sock, payload.c_str(), payload.size(), 0);
+    size_t length = git_proto_request(buf, info.host.c_str(), info.repository.c_str());
+    send(sock, buf, length, 0);
+
     std::vector<std::pair<char*, size_t>> packs;
     if(!ReceiveFull(sock, packs, buf, 100000))
     {
@@ -109,9 +134,95 @@ void git_client::LsRemote(const RepoInfo& info)
         delete buf;
         return;
     }
-    payload = pack_line::flash_pack();
+    std::string payload = pack_line::flash_pack();
     send(sock, payload.c_str(), payload.size(), 0);
 
     delete buf;
     Close();
+}
+
+void git_client::Negotiation(const RepoInfo& info)
+{
+    if(!Init(info))
+        return;
+    
+    char* buf = new char[100000];
+    size_t reqlen = git_proto_request(buf, info.host.c_str(), info.repository.c_str());
+    send(sock, buf, reqlen, 0);
+
+    std::vector<std::pair<char*, size_t>> packs;
+    if(!ReceiveFull(sock, packs, buf, 100000))
+    {
+        Close();
+        delete buf;
+        return;
+    }
+    std::string payload = pack_line::flash_pack();
+    //send(sock, payload.c_str(), payload.size(), 0);
+    
+    std::vector<git_ref> refs;
+    for(auto iter = packs.begin(); iter != packs.end(); ++iter)
+    {
+        refs.push_back(git_ref::to_ref(std::string(iter->first, iter->second)));
+        //std::cout<<"name:["<<refs.back().refname<<"] "<<refs.back().obj_id<<"\n";
+    }
+
+    auto iter = std::remove_if(refs.begin(),refs.end(), [](const git_ref& ref)
+    {
+        std::string peeled("^{}");
+        std::string tags("refs/tags/");
+        std::string heads("refs/heads/");
+        return !((peeled.compare(0, 3, ref.refname, ref.refname.size() - 3, 3) != 0)
+            && (tags.compare(0, tags.size(), ref.refname, 0, tags.size()) == 0 ||
+                heads.compare(0, heads.size(), ref.refname, 0, heads.size()) == 0));
+    });
+
+    if(iter == refs.end())
+        throw;
+    
+    char* capabilities[] = {"multi_ack_detailed","side-band-64k","agent=git/2.17.1"};
+    char want[] = "want ";
+    size_t wantCount = 0;
+    auto beg = refs.begin();
+    wantCount += std::sprintf(buf, "%s%s", want, beg->obj_id.c_str());
+    for (size_t i = 0; i < 3; i++)
+    {
+        wantCount += std::sprintf(buf + wantCount, " %s", capabilities[i]);
+    }
+    wantCount += std::sprintf(buf+wantCount,"\n");
+    payload.assign(buf, wantCount);
+    payload = pack_line::encode(payload);
+    //std::cout<<"payload:["<<payload<<"]\n";
+    send(sock, payload.c_str(), payload.size(), 0);
+
+    for(auto i = ++beg; i != iter; ++i)
+    {
+        wantCount = std::sprintf(buf, "%s%s\n", want, i->obj_id.c_str());
+        payload.assign(buf, wantCount);
+        payload = pack_line::encode(payload);
+        send(sock, payload.c_str(), payload.size(), 0);
+    }
+    payload = pack_line::flash_pack();
+    send(sock, payload.c_str(), payload.size(), 0);
+    payload = pack_line::encode("done\n");
+    send(sock, payload.c_str(), payload.size(), 0);
+
+    packs.clear();
+    std::cout<<"-------PACK---------\n";
+    if(!ReceiveFull(sock,packs, buf, 100000))
+    {
+        std::cout<<"recv failed:[";
+        for(auto i = 0; i != 50; ++i)
+        {
+            std::cout<<buf[i];
+        }
+        std::cout<<"]\n";
+        Close();
+        delete buf;
+        return;
+    }
+    
+
+    Close();
+    delete buf;
 }
