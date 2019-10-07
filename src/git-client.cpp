@@ -5,8 +5,11 @@
 #include<vector>
 #include<utility>
 #include<algorithm>
+#include<fstream>
+#include<zlib.h>
 #include"git-client.h"
 #include"git-pack-line.h"
+#include"git-packfile.h"
 #include"git-reference.h"
 
 #include<iostream>
@@ -59,7 +62,7 @@ bool ReceiveFull(int sock, std::vector<std::pair<char*, size_t>>& packs, char* b
     do
     {
         size_t recvBytes = recv(sock, lenBuf, 4,0);
-        printuint32s(lenBuf, "recvBytes", 4);
+        //printuint32s(lenBuf, "recvBytes", 4);
         if(recvBytes == 0) break;
         msgLen = std::stol(std::string(lenBuf), 0, 16);
         if(msgLen == 0) break;
@@ -86,7 +89,7 @@ bool ReceiveFull(int sock, std::vector<std::pair<char*, size_t>>& packs, char* b
                 throw;
             }
         }
-        printuint32s(packs.back().first, "pack:", packs.back().second);
+        //printuint32s(packs.back().first, "pack:", packs.back().second);
     } while(true);
     return true;
 }
@@ -208,7 +211,7 @@ void git_client::Negotiation(const RepoInfo& info)
     send(sock, payload.c_str(), payload.size(), 0);
 
     packs.clear();
-    std::cout<<"-------PACK---------\n";
+    //std::cout<<"-------PACK---------\n";
     if(!ReceiveFull(sock,packs, buf, 100000))
     {
         std::cout<<"recv failed:[";
@@ -221,7 +224,24 @@ void git_client::Negotiation(const RepoInfo& info)
         delete buf;
         return;
     }
-    
+    std::ofstream packfile("tmp.pack", std::ios::binary);
+    for(auto iter = packs.begin(); iter != packs.end(); ++iter)
+    {
+        if(iter->first[0] == 1)
+            packfile.write(iter->first + 1, iter->second - 1);
+    }
+
+    size_t bufcount = 0;
+    for(auto iter = packs.begin(); iter != packs.end(); ++iter)
+    {
+        if(iter->first[0] == 1)
+        {
+            memcpy(buf + bufcount, iter->first + 1,iter->second - 1);
+            bufcount += iter->second - 1;
+        }
+    }
+
+    git_packfile thepackfile = git_packfile::to_packfile(buf+12,bufcount - 12, 40);
 
     Close();
     delete buf;
