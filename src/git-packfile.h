@@ -31,6 +31,7 @@ struct git_object
     void set_name(const char* buf);
     void set_data(const char* buf, size_t length);
     static git_object to_object(const char* buf, size_t buflen, size_t* length);
+    void write_to(std::string path);
 };
 
 struct git_packfile
@@ -39,5 +40,8 @@ struct git_packfile
     uint32_t obj_count;
     uint8_t checksum[20];
     std::vector<git_object> objects;
+    static bool is_valid_packfile(const char* buf, size_t size);
+    size_t peek_version(const char* buf, size_t size);
+    size_t peek_objects_num(const char* buf, size_t size);
     static git_packfile to_packfile(const char* buf, size_t size, size_t object_num);
 };

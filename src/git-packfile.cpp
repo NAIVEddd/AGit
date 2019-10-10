@@ -1,7 +1,13 @@
 #include<zlib.h>
 #include<cstring>
 #include<iostream>
+#include<arpa/inet.h>
+#include<sys/stat.h>
+#include<fstream>
+#include<sstream>
+#include<iomanip>
 #include"git-packfile.h"
+#include"../util/sha1.hpp"
 
 // first is the object data length
 // second is length use N Bytes encode
@@ -15,7 +21,7 @@ std::pair<size_t, size_t> object_length(const char* buf, size_t buflen)
         length += (((size_t)buf[bytes - 1]&0x7f) << shift);
         shift += 7;
     }
-    std::cout<<"length:"<<length<<"\n";
+    //std::cout<<"length:"<<length<<"\n";
     return std::make_pair(length, bytes);
 }
 
@@ -27,8 +33,8 @@ git_object::git_object(const git_object& other)
     offset = other.offset;
     if(other.object_name)
     {
-        object_name = new char[20];
-        memcpy(object_name, other.object_name, 20);
+        object_name = new char[40];
+        memcpy(object_name, other.object_name, 40);
     }
     if(other.data)
     {
@@ -48,8 +54,8 @@ git_object& git_object::operator=(const git_object& other)
     offset = other.offset;
     if(other.object_name)
     {
-        object_name = new char[20];
-        memcpy(object_name, other.object_name, 20);
+        object_name = new char[40];
+        memcpy(object_name, other.object_name, 40);
     }
     if(other.data)
     {
@@ -89,15 +95,17 @@ git_object::~git_object()
 
 void git_object::set_name(const char* buf)
 {
-    //std::cout<<"git_object::set_name(buf)";
-    std::cout<<"git_object name:";
+    std::ostringstream out;
+    out<<std::hex;
     for(auto i = 0; i != 20; ++i)
-     std::cout<<(uint32_t)(uint8_t)buf[i]<<" ";
-    std::cout<<"\n";
+    {
+        out.width(2);
+        out.fill('0');
+        out<<(uint32_t)(uint8_t)buf[i];
+    }
     if(object_name) delete object_name;
-    object_name = new char[20];
-    memcpy(object_name, buf, 20);
-    //std::cout<<" done.\n";
+    object_name = new char[40];
+    memcpy(object_name, out.str().c_str(), 40);
 }
 
 void git_object::set_data(const char* buf, size_t len)
@@ -118,7 +126,7 @@ git_object git_object::to_object(const char* buf, size_t buflen, size_t* length)
     size_t objname_length = 0;
 
     object.type = (git_object::OBJ_TYPE)((buf[0] >>4) & 0x7);
-    std::cout<<"object.type:"<<object.type<<"\n";
+    //std::cout<<"object.type:"<<object.type<<"\n";
     switch (object.type)
     {
     case git_object::OBJ_REF_DELTA :
@@ -148,7 +156,7 @@ git_object git_object::to_object(const char* buf, size_t buflen, size_t* length)
         d_stream.next_out = outbuf + d_stream.total_out;            /* discard the output */
         d_stream.avail_out = (uInt)totaloutbufsize - d_stream.total_out;
         int err = inflate(&d_stream, Z_NO_FLUSH);
-        std::cout<<"buflen:"<<buflen<<"\tobjlen:"<<d_stream.total_in + lenInfo.second<<"\ttotal in:"<<d_stream.total_in<<"\ttotal out:"<<d_stream.total_out<<"\n";
+        //std::cout<<"buflen:"<<buflen<<"\tobjlen:"<<d_stream.total_in + lenInfo.second<<"\ttotal in:"<<d_stream.total_in<<"\ttotal out:"<<d_stream.total_out<<"\n";
         if (err == Z_STREAM_END) break;
         else if(err == Z_MEM_ERROR || err == Z_NEED_DICT || err == Z_DATA_ERROR)
         {
@@ -165,34 +173,102 @@ git_object git_object::to_object(const char* buf, size_t buflen, size_t* length)
     delete outbuf;
     return object;
 }
+std::string MakeObjectHeader(git_object::OBJ_TYPE type, size_t length)
+{
+    std::string objType;
+    switch (type)
+    {
+    case git_object::OBJ_COMMIT :
+        objType = "commit ";
+        break;
+    case git_object::OBJ_TREE:
+        objType = "tree ";
+        break;
+    case git_object::OBJ_BLOB:
+        objType = "blob ";
+        break;
+    case git_object::OBJ_TAG:
+        objType = "tag ";
+        break;
+    
+    default:
+        break;
+    }
+    std::string header = objType + std::to_string(length);
+    header.push_back('\0');
+    return header;
+}
+size_t _deflate(char* buf, size_t buflen, const char* data, size_t length)
+{
+    compress((Byte*)buf, &buflen, (const Byte*)data, length);
+    return buflen;
+}
+void git_object::write_to(std::string path)
+{
+    SHA1 sha1checksum;
+    std::string blob = MakeObjectHeader(type, length);
+    blob.append(data, length);
+    sha1checksum.update(blob);
+    std::string sha1 = sha1checksum.final();
+    path += sha1.substr(0, 2) + std::string("/") ;
+    std::string filename = sha1.substr(2, 38);
+
+    //std::cout<<"write to path:["<<path<<"], filename is:["<<filename<<"]\n";
+    mkdir(path.c_str(), 0666);
+    std::ofstream file(path + filename);
+    char* buf = new char[100000];
+    size_t len = _deflate(buf, 100000, blob.c_str(), blob.size());
+    file.write(buf, len);
+    delete buf;
+}
+
+bool git_packfile::is_valid_packfile(const char* buf, size_t size)
+{
+    return size > 4 && buf[0] == 'P' && buf[1] == 'A' && buf[2] == 'C' && buf[3] == 'K';
+}
+
+size_t git_packfile::peek_version(const char* buf, size_t size)
+{
+    uint32_t ver = *(uint32_t*)buf + 4;
+    version = ntohl(ver);
+    return version;
+}
+
+size_t git_packfile::peek_objects_num(const char* buf, size_t size)
+{
+    uint32_t nums = *(uint32_t*)(buf + 8);
+    obj_count = ntohl(nums);
+    return obj_count;
+}
 
 git_packfile git_packfile::to_packfile(const char* buf, size_t size, size_t object_num)
 {
-    size_t obj_offset = 0;
+    if(! git_packfile::is_valid_packfile(buf, size))
+    {
+        std::cout<<"Invalid packfile.\n";
+        throw;
+    }
     git_packfile packfile;
-    packfile.objects.reserve(object_num);
+    packfile.peek_version(buf, size);
+    packfile.objects.reserve(packfile.peek_objects_num(buf, size));
+    buf += 12;      // 4 byte magic encode, 4 byte version, 4byte object numbers.
+    size -= 12;
+    size_t obj_offset = 0; 
     git_object obj;
-    for(size_t i = 0; i != object_num; ++i)
+    for(size_t i = 0; i != packfile.obj_count; ++i)
     {
         size_t objlen = 0;
-        std::cout<<"pass:"<<i<<"\toffset:"<<obj_offset<<"\n";
+        //std::cout<<"pass:"<<i<<"\toffset:"<<obj_offset<<"\n";
         obj = git_object::to_object(buf + obj_offset, size - obj_offset, &objlen);
         packfile.objects.push_back(obj);
+        //std::cout<<"pass "<<i<<" end.\n";
         obj_offset += objlen;
     }
     if((size - obj_offset) != 20)
     {
         throw;
     }
-    else
-    {
-        std::cout<<"checksum is:[";
-        for(auto i = obj_offset; i != size; ++i)
-        {
-            std::cout<<(uint32_t)(uint8_t)buf[i]<<" ";
-        }
-        std::cout<<"]\n";
-    }
+
     
     memcpy(packfile.checksum, buf + obj_offset, 20);
     return packfile;
