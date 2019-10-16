@@ -6,7 +6,9 @@
 #include<fstream>
 #include<sstream>
 #include<iomanip>
+#include"git-patch.h"
 #include"git-packfile.h"
+#include"git-path-helper.h"
 #include"../util/sha1.hpp"
 
 // first is the object data length
@@ -127,11 +129,14 @@ git_object git_object::to_object(const char* buf, size_t buflen, size_t* length)
 
     object.type = (git_object::OBJ_TYPE)((buf[0] >>4) & 0x7);
     //std::cout<<"object.type:"<<object.type<<"\n";
+        std::string refname;
     switch (object.type)
     {
     case git_object::OBJ_REF_DELTA :
         object.set_name(buf + lenInfo.second);
         objname_length = 20;
+        refname.assign(object.object_name, 40);
+        //std::cout<<"ref delta source : ["<<refname<<"]\n";
         break;
 
     case git_object::OBJ_OFS_DELTA :
@@ -152,7 +157,7 @@ git_object git_object::to_object(const char* buf, size_t buflen, size_t* length)
 
     Byte* outbuf = new Byte[100000];
     uInt totaloutbufsize = 100000;
-    for (int i = 0; i != 10; ++i) {
+    for (int i = 0; i != 100; ++i) {
         d_stream.next_out = outbuf + d_stream.total_out;            /* discard the output */
         d_stream.avail_out = (uInt)totaloutbufsize - d_stream.total_out;
         int err = inflate(&d_stream, Z_NO_FLUSH);
@@ -203,23 +208,91 @@ size_t _deflate(char* buf, size_t buflen, const char* data, size_t length)
     compress((Byte*)buf, &buflen, (const Byte*)data, length);
     return buflen;
 }
-void git_object::write_to(std::string path)
+bool git_object::write_to(std::string path)
 {
-    SHA1 sha1checksum;
-    std::string blob = MakeObjectHeader(type, length);
-    blob.append(data, length);
-    sha1checksum.update(blob);
-    std::string sha1 = sha1checksum.final();
-    path += sha1.substr(0, 2) + std::string("/") ;
-    std::string filename = sha1.substr(2, 38);
+    git_path_helper ph("/mnt/c/allFiles/network/AGit/build/repo");
+    if(type != OBJ_TYPE::OBJ_OFS_DELTA && type != OBJ_TYPE::OBJ_REF_DELTA)
+    {
+        SHA1 sha1checksum;
+        std::string blob = MakeObjectHeader(type, length);
+        blob.append(data, length);
+        sha1checksum.update(blob);
+        std::string sha1 = sha1checksum.final();
+        //std::cout<<"object name is: ["<<sha1<<"]\n";
+        //path += sha1.substr(0, 2) + std::string("/") ;
+        std::string filename = sha1.substr(2, 38);
+        ph.make_object_path(sha1);
+        filename = ph.get_object_filename(sha1);
 
-    //std::cout<<"write to path:["<<path<<"], filename is:["<<filename<<"]\n";
-    mkdir(path.c_str(), 0666);
-    std::ofstream file(path + filename);
+        //std::cout<<"write to path:["<<path<<"], filename is:["<<filename<<"]\n";
+        //mkdir(path.c_str(), 0666);
+        std::ofstream file(filename);
+        char* buf = new char[100000];
+        size_t len = _deflate(buf, 100000, blob.c_str(), blob.size());
+        file.write(buf, len);
+        delete buf;
+        return true;
+    }
+    // read object file's content
+    // inflate and take valid object data
+    // patch and write
+    char name[41] = {0};
+    memcpy(name, object_name, 40);
+    std::string nm = ph.get_object_filename(name);
+    struct stat st;
+    if(stat(nm.c_str(), &st) == -1)
+    {
+        return false;
+    }
+    std::ifstream file(nm, std::ios_base::binary);
     char* buf = new char[100000];
-    size_t len = _deflate(buf, 100000, blob.c_str(), blob.size());
-    file.write(buf, len);
+    size_t bufsize = file.readsome(buf, 100000);
+    char* uncompressedData = new char[100000];
+    size_t uncompressedDataLen = 100000;
+    uncompress((Bytef*)uncompressedData, &uncompressedDataLen, (const Bytef*)buf, bufsize);
+
+    //std::cout<<nm<<":["<<uncompressedData<<"]\n";
+    {
+        size_t len = 0;
+        for(auto i = 0; i != uncompressedDataLen; ++i)
+        {
+            if(uncompressedData[i] == ' ')
+                break;
+            ++len;
+        }
+        git_object obj;
+        std::string objtype;
+        objtype.assign(uncompressedData, len);
+        if(objtype == "tree")
+        {
+            obj.type = OBJ_TYPE::OBJ_TREE;
+        }
+        else if(objtype == "commit")
+        {
+            obj.type = OBJ_TYPE::OBJ_COMMIT;
+        }
+        else if(objtype == "tag")
+        {
+            obj.type = OBJ_TYPE::OBJ_TAG;
+        }
+        else if(objtype == "blob")
+        {
+            obj.type = OBJ_TYPE::OBJ_BLOB;
+        }
+        else
+        {
+            std::cout<<"Undefined object type.";
+            throw;
+        }
+        len = strlen(uncompressedData) + 1;
+        git_patch patch(uncompressedData + len, data, length);
+        patch.do_patch();
+        obj.set_data(patch.targbuf, patch.targlen);
+        obj.write_to("");
+    }
+    delete uncompressedData;
     delete buf;
+    return true;
 }
 
 bool git_packfile::is_valid_packfile(const char* buf, size_t size)

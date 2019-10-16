@@ -31,7 +31,7 @@ struct git_object
     void set_name(const char* buf);
     void set_data(const char* buf, size_t length);
     static git_object to_object(const char* buf, size_t buflen, size_t* length);
-    void write_to(std::string path);
+    bool write_to(std::string path);
 };
 
 struct git_packfile

@@ -161,7 +161,6 @@ void git_client::Negotiation(const RepoInfo& info)
         return;
     }
     std::string payload = pack_line::flash_pack();
-    //send(sock, payload.c_str(), payload.size(), 0);
     
     std::vector<git_ref> refs;
     for(auto iter = packs.begin(); iter != packs.end(); ++iter)
@@ -195,7 +194,6 @@ void git_client::Negotiation(const RepoInfo& info)
     wantCount += std::sprintf(buf+wantCount,"\n");
     payload.assign(buf, wantCount);
     payload = pack_line::encode(payload);
-    //std::cout<<"payload:["<<payload<<"]\n";
     send(sock, payload.c_str(), payload.size(), 0);
 
     for(auto i = ++beg; i != iter; ++i)
@@ -214,12 +212,6 @@ void git_client::Negotiation(const RepoInfo& info)
     //std::cout<<"-------PACK---------\n";
     if(!ReceiveFull(sock,packs, buf, 100000))
     {
-        //std::cout<<"recv failed:[";
-        //for(auto i = 0; i != 50; ++i)
-        //{
-        //    std::cout<<buf[i];
-        //}
-        //std::cout<<"]\n";
         Close();
         delete buf;
         return;
@@ -239,14 +231,19 @@ void git_client::Negotiation(const RepoInfo& info)
     git_packfile thepackfile = git_packfile::to_packfile(buf,bufcount, 40);
     for(auto iter = thepackfile.objects.begin(); iter != thepackfile.objects.end(); ++iter)
     {
-        iter->write_to("/mnt/c/allFiles/network/AGit/build/repo/.git/objects/");
+        iter->write_to("");
         if(iter->type != git_object::OBJ_TREE)
         {
             continue;
         }
-        packfile.write("-----begin-----", 16);
-        packfile.write(iter->data, iter->length);
-        packfile.write("------end------", 16);
+        //packfile.write("-----begin-----", 16);
+        //packfile.write(iter->data, iter->length);
+        //packfile.write("------end------", 16);
+    }
+
+    for(auto iter = refs.begin(); iter != refs.end(); ++iter)
+    {
+        std::cout<<"name:["<<iter->refname<<"]\n";
     }
 
     Close();
