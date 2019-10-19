@@ -11,6 +11,8 @@
 #include"git-pack-line.h"
 #include"git-packfile.h"
 #include"git-reference.h"
+#include"git-repo.h"
+#include"git-path-helper.h"
 
 #include<iostream>
 
@@ -62,7 +64,6 @@ bool ReceiveFull(int sock, std::vector<std::pair<char*, size_t>>& packs, char* b
     do
     {
         size_t recvBytes = recv(sock, lenBuf, 4,0);
-        //printuint32s(lenBuf, "recvBytes", 4);
         if(recvBytes == 0) break;
         msgLen = std::stol(std::string(lenBuf), 0, 16);
         if(msgLen == 0) break;
@@ -89,9 +90,14 @@ bool ReceiveFull(int sock, std::vector<std::pair<char*, size_t>>& packs, char* b
                 throw;
             }
         }
-        //printuint32s(packs.back().first, "pack:", packs.back().second);
     } while(true);
     return true;
+}
+
+git_client::git_client(std::string path)
+    :gitpath(path)
+{
+
 }
 
 bool git_client::Init(const RepoInfo& info)
@@ -162,11 +168,25 @@ void git_client::Negotiation(const RepoInfo& info)
     }
     std::string payload = pack_line::flash_pack();
     
+    gitpath.make_path_tree();
     std::vector<git_ref> refs;
+    std::string symref, HEADoid;
     for(auto iter = packs.begin(); iter != packs.end(); ++iter)
     {
         refs.push_back(git_ref::to_ref(std::string(iter->first, iter->second)));
-        //std::cout<<"name:["<<refs.back().refname<<"] "<<refs.back().obj_id<<"\n";
+        refs.back().write_to(gitpath);
+        if(refs.back().refname == "HEAD") HEADoid = refs.back().obj_id;
+    }
+    for(auto iter = refs.begin(); iter != refs.end(); ++iter)
+    {
+        if(iter->obj_id == HEADoid)
+            symref = iter->refname;
+    }
+    {
+        std::ofstream symfile(gitpath.get_refs_basepath() + "/HEAD");
+        symfile.write("ref: ", 5);
+        symfile.write(symref.data(), symref.size());
+        symfile.write("\n", 1);
     }
 
     auto iter = std::remove_if(refs.begin(),refs.end(), [](const git_ref& ref)
@@ -209,14 +229,12 @@ void git_client::Negotiation(const RepoInfo& info)
     send(sock, payload.c_str(), payload.size(), 0);
 
     packs.clear();
-    //std::cout<<"-------PACK---------\n";
     if(!ReceiveFull(sock,packs, buf, 100000))
     {
         Close();
         delete buf;
         return;
     }
-    std::ofstream packfile("tmp.pack", std::ios::binary);
 
     size_t bufcount = 0;
     for(auto iter = packs.begin(); iter != packs.end(); ++iter)
@@ -231,20 +249,20 @@ void git_client::Negotiation(const RepoInfo& info)
     git_packfile thepackfile = git_packfile::to_packfile(buf,bufcount, 40);
     for(auto iter = thepackfile.objects.begin(); iter != thepackfile.objects.end(); ++iter)
     {
-        iter->write_to("");
-        if(iter->type != git_object::OBJ_TREE)
+        try
         {
-            continue;
+            iter->write_to(gitpath, "");
         }
-        //packfile.write("-----begin-----", 16);
-        //packfile.write(iter->data, iter->length);
-        //packfile.write("------end------", 16);
+        catch(char const* str)
+        {
+            std::cout<<"error.\n";
+        }
     }
 
-    for(auto iter = refs.begin(); iter != refs.end(); ++iter)
-    {
-        std::cout<<"name:["<<iter->refname<<"]\n";
-    }
+    git_object head = git_object::read_object(gitpath, HEADoid);
+    git_repo* repo = git_repo::to_repo(gitpath, head);
+    repo->checkout(gitpath);
+    delete repo;
 
     Close();
     delete buf;

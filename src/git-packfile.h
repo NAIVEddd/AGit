@@ -1,6 +1,7 @@
 #pragma once
 #include<string>
 #include<vector>
+#include"git-path-helper.h"
 
 struct git_object
 {
@@ -31,7 +32,8 @@ struct git_object
     void set_name(const char* buf);
     void set_data(const char* buf, size_t length);
     static git_object to_object(const char* buf, size_t buflen, size_t* length);
-    bool write_to(std::string path);
+    static git_object read_object(git_path_helper&ph, std::string objid);
+    bool write_to(git_path_helper& ph, std::string path);
 };
 
 struct git_packfile

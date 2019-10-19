@@ -1,5 +1,6 @@
 #include<vector>
 #include<sys/stat.h>
+#include<iostream>
 #include"git-path-helper.h"
 
 git_path_helper::git_path_helper(std::string basepath)
@@ -25,10 +26,11 @@ void git_path_helper::make_path_tree()
     // |-HEAD
     // |-index
     std::vector<std::string> paths;
+    paths.push_back(base);
     paths.push_back(base + "/.git");
     paths.push_back(base + "/.git/objects");
     paths.push_back(base + "/.git/refs");
-    paths.push_back(base + "./git/refs/heads");
+    paths.push_back(base + "/.git/refs/heads");
     paths.push_back(base + "/.git/refs/remotes");
     paths.push_back(base + "/.git/refs/tags");
     paths.push_back(base + "/.git/branches");
@@ -42,7 +44,7 @@ void git_path_helper::make_object_path(std::string objid)
 {
     std::string path = get_object_path(objid);
     struct stat sb;
-    if(stat(path.c_str(), &sb) == -1)
+    if(stat(path.c_str(), &sb) != -1)
         return;
     mkdir(path.c_str(), 0666);
 }
@@ -57,4 +59,30 @@ std::string git_path_helper::get_object_filename(std::string objid)
 {
     std::string name = get_object_path(objid) + "/" + objid.substr(2, 38);
     return name;
+}
+
+std::string git_path_helper::get_refs_basepath()
+{
+    return base + "/.git";
+}
+
+std::string git_path_helper::get_repo_basepath()
+{
+    return base;
+}
+
+void git_path_helper::makedir(std::string path)
+{
+    struct stat st;
+    if(stat(path.c_str(), &st) != -1)
+        return;
+    mkdir(path.c_str(), 0666);
+}
+
+void git_path_helper::chmode(std::string path, uint32_t mode)
+{
+    struct stat st;
+    if(stat(path.c_str(), &st) == -1)
+        return;
+    chmod(path.c_str(), mode);
 }

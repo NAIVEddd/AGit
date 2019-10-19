@@ -178,6 +178,60 @@ git_object git_object::to_object(const char* buf, size_t buflen, size_t* length)
     delete outbuf;
     return object;
 }
+
+git_object git_object::read_object(git_path_helper& ph, std::string objid)
+{
+    git_object obj;
+    std::string name = ph.get_object_filename(objid);
+    struct stat st;
+    if(stat(name.c_str(), &st) == -1)
+    {
+        std::cout<<"invalid object id:["<<name<<"]\n";
+        return obj;
+    }
+    std::ifstream file(name, std::ios_base::binary);
+    char* buf = new char[100000];
+    size_t bufsize = file.readsome(buf, 100000);
+    char* uncompressedData = new char[100000];
+    size_t uncompressedDataLen = 100000;
+    uncompress((Bytef*)uncompressedData, &uncompressedDataLen, (const Bytef*)buf, bufsize);
+    size_t dataoffset = strlen(uncompressedData);
+    std::string objtype;
+    size_t len = 0;
+    for(auto i = 0; i != uncompressedDataLen; ++i)
+    {
+        if(uncompressedData[i] == ' ')
+            break;
+        ++len;
+    }
+    objtype.assign(uncompressedData, len);
+    if(objtype == "tree")
+    {
+        obj.type = OBJ_TYPE::OBJ_TREE;
+    }
+    else if(objtype == "commit")
+    {
+        obj.type = OBJ_TYPE::OBJ_COMMIT;
+    }
+    else if(objtype == "tag")
+    {
+        obj.type = OBJ_TYPE::OBJ_TAG;
+    }
+    else if(objtype == "blob")
+    {
+        obj.type = OBJ_TYPE::OBJ_BLOB;
+    }
+    else
+    {
+        std::cout<<"Undefined object type.";
+        throw;
+    }
+    obj.set_data(uncompressedData + dataoffset + 1, uncompressedDataLen - dataoffset - 1);
+    delete uncompressedData;
+    delete buf;
+    return obj;
+}
+
 std::string MakeObjectHeader(git_object::OBJ_TYPE type, size_t length)
 {
     std::string objType;
@@ -208,9 +262,8 @@ size_t _deflate(char* buf, size_t buflen, const char* data, size_t length)
     compress((Byte*)buf, &buflen, (const Byte*)data, length);
     return buflen;
 }
-bool git_object::write_to(std::string path)
+bool git_object::write_to(git_path_helper& ph, std::string path)
 {
-    git_path_helper ph("/mnt/c/allFiles/network/AGit/build/repo");
     if(type != OBJ_TYPE::OBJ_OFS_DELTA && type != OBJ_TYPE::OBJ_REF_DELTA)
     {
         SHA1 sha1checksum;
@@ -238,60 +291,21 @@ bool git_object::write_to(std::string path)
     // patch and write
     char name[41] = {0};
     memcpy(name, object_name, 40);
-    std::string nm = ph.get_object_filename(name);
-    struct stat st;
-    if(stat(nm.c_str(), &st) == -1)
+    git_object object = git_object::read_object(ph, name);
+
+    if(object.data == nullptr)
     {
         return false;
     }
-    std::ifstream file(nm, std::ios_base::binary);
-    char* buf = new char[100000];
-    size_t bufsize = file.readsome(buf, 100000);
-    char* uncompressedData = new char[100000];
-    size_t uncompressedDataLen = 100000;
-    uncompress((Bytef*)uncompressedData, &uncompressedDataLen, (const Bytef*)buf, bufsize);
-
-    //std::cout<<nm<<":["<<uncompressedData<<"]\n";
     {
-        size_t len = 0;
-        for(auto i = 0; i != uncompressedDataLen; ++i)
-        {
-            if(uncompressedData[i] == ' ')
-                break;
-            ++len;
-        }
         git_object obj;
-        std::string objtype;
-        objtype.assign(uncompressedData, len);
-        if(objtype == "tree")
-        {
-            obj.type = OBJ_TYPE::OBJ_TREE;
-        }
-        else if(objtype == "commit")
-        {
-            obj.type = OBJ_TYPE::OBJ_COMMIT;
-        }
-        else if(objtype == "tag")
-        {
-            obj.type = OBJ_TYPE::OBJ_TAG;
-        }
-        else if(objtype == "blob")
-        {
-            obj.type = OBJ_TYPE::OBJ_BLOB;
-        }
-        else
-        {
-            std::cout<<"Undefined object type.";
-            throw;
-        }
-        len = strlen(uncompressedData) + 1;
-        git_patch patch(uncompressedData + len, data, length);
+        obj.type = object.type;
+
+        git_patch patch(object.data, data, length);
         patch.do_patch();
         obj.set_data(patch.targbuf, patch.targlen);
-        obj.write_to("");
+        obj.write_to(ph, "");
     }
-    delete uncompressedData;
-    delete buf;
     return true;
 }
 
